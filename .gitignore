@@ -1,10 +1,53 @@
-node_modules/
+# --- 基础 ---
 node_modules/
 dist/
 build/
+*.log
 .DS_Store
+Thumbs.db
+
+# --- 环境与配置 ---
 .env
-dist/
-build/
-.DS_Store
-.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# --- IDE与编辑器 ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- 系统与缓存 ---
+*.tmp
+*.temp
+*.bak
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+.cache/
+.eslintcache
+
+# --- 测试与输出 ---
+coverage/
+*.spec.js
+*.spec.jsx
+*.spec.ts
+*.spec.tsx
+
+# --- Vite 相关 ---
+.vite/
+vite.config.ts.timestamp-*
+*.local
+
+# --- TypeScript 编译输出 ---
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# --- 其他 ---
+*.zip
+*.rar
+*.7z
