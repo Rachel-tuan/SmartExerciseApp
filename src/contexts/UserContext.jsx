@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { upsertUser, updateUserSettings, seedTestAccounts } from '../models';
+import { upsertUser, updateUserSettings, seedTestAccounts, migrateConditionsExistingData } from '../models';
 import * as db from '../models/db';
 
 const UserContext = createContext();
@@ -28,6 +28,9 @@ export const UserProvider = ({ children }) => {
           // 忽略种子错误，继续初始化
           console.warn('测试账号种子初始化失败或已存在:', e?.message || e);
         }
+        try {
+          await migrateConditionsExistingData({ '高血压': 'hypertension', '糖尿病': 'diabetes', '心脏病': 'heart_disease' });
+        } catch (_e) {}
         // 首次进入保持未登录，确保展示登录/注册页
         setUser(null);
       } catch (error) {

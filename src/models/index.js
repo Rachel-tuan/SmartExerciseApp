@@ -3,6 +3,7 @@ import * as db from './db';
 import * as rules from './rules';
 import { generateExercisePrescription, computeAdherenceForWeek } from './exercise';
 import { computeConfidenceScore } from '../utils/computeConfidence';
+import { normalizeConditions, extractConditionsFromText } from '../utils/conditions';
 
 // 用户相关
 export async function getCurrentUser() {
@@ -11,12 +12,32 @@ export async function getCurrentUser() {
 }
 
 export async function upsertUser(userData) {
+  // 统一疾病编码为英文，兼容从病史文本抽取
+  const rawDiseases = Array.isArray(userData?.diseases) ? userData.diseases : [];
+  const extraFromHistory = extractConditionsFromText(userData?.medical_history || userData?.medicalHistory || '');
+  const canonicalDiseases = normalizeConditions([ ...rawDiseases, ...extraFromHistory ]);
   const user = {
     ...userData,
+    diseases: canonicalDiseases,
     user_id: userData.user_id || nanoid()
   };
   await db.put('users', user);
   return user;
+}
+
+export async function migrateConditionsExistingData(normalize_map = {}) {
+  const users = await db.getAll('users');
+  const map = normalize_map || {};
+  for (const u of users) {
+    const raw = Array.isArray(u?.diseases) ? u.diseases : [];
+    const mapped = raw.map(d => (map[d] ? map[d] : d));
+    const extras = extractConditionsFromText(u?.medical_history || u?.medicalHistory || '');
+    const canonical = normalizeConditions([ ...mapped, ...extras ]);
+    const same = Array.isArray(u?.diseases) && u.diseases.length === canonical.length && u.diseases.every((x, i) => x === canonical[i]);
+    if (!same) {
+      await db.put('users', { ...u, diseases: canonical });
+    }
+  }
 }
 
 export async function updateUserSettings(userId, settings) {
@@ -237,6 +258,14 @@ export async function getPrescriptions(userId) {
   return filtered.sort((a, b) => new Date(b.start_date || b.created_at || 0) - new Date(a.start_date || a.created_at || 0));
 }
 
+export async function saveCRFAuditLog(entry) {
+  return db.saveCRFAuditLog(entry);
+}
+
+export async function getCRFAuditLogs() {
+  return db.getCRFAuditLogs();
+}
+
 export async function addPrescription(userId, prescriptionData) {
   const prescription = {
     prescription_id: nanoid(),
@@ -444,7 +473,7 @@ export async function getWeeklyExerciseSummary(userId, weekStartDate, plannedSes
 }
 
 // Gate 事件封装
-export async function logGateEvent(userId, { date, status, reasons = [], suggestedAction, forcedStart = false, prescriptionId }) {
+export async function logGateEvent(userId, { date, status, reasons = [], suggestedAction, forcedStart = false, prescription_id }) {
   return db.upsertGateEvent({
     user_id: userId,
     date,
@@ -452,7 +481,7 @@ export async function logGateEvent(userId, { date, status, reasons = [], suggest
     reasons,
     suggestedAction,
     forcedStart,
-    prescription_id: prescriptionId
+    prescription_id
   })
 }
 

@@ -12,9 +12,18 @@ export interface UserProfile {
 export type MeasurementType = 'bp' | 'bg' | 'hr';
 export type MeasurementSource = 'clinical' | 'wearable' | 'manual';
 
+// 明确血糖值结构，支持空腹/随机标注
+export interface BloodGlucoseValue {
+  value: number;
+  isFasting?: boolean; // true: 空腹；false/undefined: 随机
+}
+
 export interface Measurement {
   type: MeasurementType;
-  value: any; // bp: { systolic:number, diastolic:number } | bg: number | hr: number
+  value:
+    | { systolic: number; diastolic: number } // bp
+    | BloodGlucoseValue // bg（兼容旧数据：可能为纯 number）
+    | number; // hr 或旧版 bg
   takenAt: string; // ISO string
   source: MeasurementSource;
 }
@@ -28,7 +37,7 @@ export interface GateResult {
 }
 
 export interface Prescription {
-  id: string;
+  prescription_id: string;
   createdAt: string; // ISO string
   fit: {
     freq: number;      // 次/周
@@ -37,6 +46,8 @@ export interface Prescription {
     type: string;      // 运动类型，如步行、骑行
   };
   rules: string[];    // 管理与预警规则
+  rules_for_ui?: string[];
+  explain?: any;
 }
 
 export interface AdherenceLog {

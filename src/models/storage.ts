@@ -54,12 +54,23 @@ export async function getMeasurements(type?: Measurement['type']): Promise<Measu
 
 // 处方
 export async function getPrescriptions(): Promise<Prescription[]> {
-  return lsGet<Prescription[]>('prescriptions', []);
+  // 读取并进行一次性迁移：若存在旧字段 id，则转为 prescription_id
+  const raw = lsGet<any[]>('prescriptions', []);
+  const migrated: Prescription[] = (raw || []).map((p: any) => {
+    if (p && !p.prescription_id && p.id) {
+      const { id, ...rest } = p;
+      return { prescription_id: id, ...rest } as Prescription;
+    }
+    return p as Prescription;
+  });
+  // 将迁移后的结果回写存储，保证后续一致
+  lsSet('prescriptions', migrated);
+  return migrated;
 }
 
 export async function upsertPrescription(p: Prescription): Promise<void> {
   const all = lsGet<Prescription[]>('prescriptions', []);
-  const idx = all.findIndex(x => x.id === p.id);
+  const idx = all.findIndex(x => x.prescription_id === p.prescription_id);
   if (idx >= 0) all[idx] = p; else all.unshift(p);
   lsSet('prescriptions', all);
 }
@@ -84,7 +95,7 @@ export interface GateEvent {
   reasons: string[];
   suggestedAction?: string;
   forcedStart?: boolean; // 黄/红灯仍强行开始
-  prescriptionId?: string;
+  prescription_id?: string;
 }
 
 export async function getGateEvents(): Promise<GateEvent[]> {
@@ -93,7 +104,7 @@ export async function getGateEvents(): Promise<GateEvent[]> {
 
 export async function logGateEvent(evt: GateEvent): Promise<void> {
   const all = lsGet<GateEvent[]>('gate_events', []);
-  const idx = all.findIndex(x => x.id === evt.id || (x.date === evt.date && x.prescriptionId === evt.prescriptionId));
+  const idx = all.findIndex(x => x.id === evt.id || (x.date === evt.date && x.prescription_id === evt.prescription_id));
   if (idx >= 0) all[idx] = { ...all[idx], ...evt }; else all.unshift(evt);
   lsSet('gate_events', all);
 }

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Card, Typography, Space, Row, Col, Tag, List, Button, Progress, message, Modal, InputNumber, Checkbox, Form } from 'antd'
+import { Card, Typography, Space, Row, Col, Tag, List, Button, Progress, message, InputNumber, Checkbox, Form, Modal } from 'antd'
 import { CheckCircleTwoTone, AlertTwoTone, HeartOutlined } from '@ant-design/icons'
 import styled from 'styled-components'
 import { useUser } from '../contexts/UserContext'
+import { useHealthData } from '../contexts/HealthDataContext'
 import {
   getWeeklyExerciseSummary,
   setExerciseCompletion,
@@ -11,9 +12,13 @@ import {
   getDailyGoalMinutes,
   setDailyGoalMinutes,
   getWeeklyPlannedDaysGoal,
-  setWeeklyPlannedDaysGoal
+  setWeeklyPlannedDaysGoal,
+  logGateEvent,
+  updateGateEvent
 } from '../models'
-import { preExerciseGate } from '@/models/rules'
+import { preExerciseGate } from '../engine'
+import InlineGateBadge from '../components/InlineGateBadge'
+import showSafetyDialog from '../components/SafetyDialog'
 import { getPrescriptions } from '@/models/storage'
 import { startOfWeek, addDays, format } from 'date-fns'
 
@@ -44,6 +49,7 @@ const weekdays = ['周一','周二','周三','周四','周五','周六','周日'
 
 const ExercisePage = () => {
   const { user } = useUser()
+  const { buildUserProfile } = useHealthData()
   const [prescription, setPrescription] = useState(null)
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }))
   const [weekSummary, setWeekSummary] = useState({ dates: [], completedDates: [], completedCount: 0, adherencePercent: 0 })
@@ -159,28 +165,86 @@ const ExercisePage = () => {
 
   const weekDates = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(weekStart, i)), [weekStart])
 
+  const gatePreview = useMemo(() => {
+    try {
+      const measurements = []
+      if (healthStats?.latestRecord?.systolic != null && healthStats?.latestRecord?.diastolic != null) {
+        measurements.push({ type: 'bp', value: { systolic: Number(healthStats.latestRecord.systolic), diastolic: Number(healthStats.latestRecord.diastolic) }, takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(), source: 'manual' })
+      }
+      if (healthStats?.latestRecord?.blood_sugar != null) {
+        measurements.push({ type: 'bg', value: { value: Number(healthStats.latestRecord.blood_sugar), isFasting: Boolean(healthStats?.latestRecord?.blood_glucose_is_fasting) }, takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(), source: 'manual' })
+      }
+      if (healthStats?.latestRecord?.heart_rate != null) {
+        measurements.push({ type: 'hr', value: Number(healthStats.latestRecord.heart_rate), takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(), source: 'manual' })
+      }
+      const profile = buildUserProfile()
+      return preExerciseGate(measurements, profile)
+    } catch (_e) {
+      return { status: 'green', reasons: [], suggestedAction: undefined }
+    }
+  }, [healthStats?.latestRecord?.systolic, healthStats?.latestRecord?.diastolic, healthStats?.latestRecord?.blood_sugar, healthStats?.latestRecord?.heart_rate, healthStats?.latestRecord?.timestamp, user?.age, user?.gender, user?.height, user?.weight, user?.waist, user?.diseases])
+
   const handleToggleToday = async () => {
     if (!user) return
     const today = new Date()
     const dateStr = ymd(today)
-    // 运动前安全闸门
-    const gate = preExerciseGate({
-      sbp: healthStats?.latestRecord?.systolic,
-      dbp: healthStats?.latestRecord?.diastolic,
-      glucose: healthStats?.latestRecord?.blood_sugar,
-      ketonePositive: false,
-      onInsulinOrSecretagogue: Boolean(user?.onInsulinOrSecretagogue),
-      meds: [],
-      plannedLoad: (prescription?.fit?.intensity || '').includes('高') ? 'high' : 'moderate'
-    })
-    if (!gate.ok) {
-      Modal.error({ title: '暂缓运动', content: (<ul>{gate.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>) })
-      return
+    // 运动前安全闸门（canonical）
+    const measurements = []
+    if (healthStats?.latestRecord?.systolic != null && healthStats?.latestRecord?.diastolic != null) {
+      measurements.push({
+        type: 'bp',
+        value: { systolic: Number(healthStats.latestRecord.systolic), diastolic: Number(healthStats.latestRecord.diastolic) },
+        takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(),
+        source: 'manual'
+      })
     }
-    if (gate.caution) {
-      Modal.warning({ title: '注意事项', content: (<ul>{gate.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>) })
+    if (healthStats?.latestRecord?.blood_sugar != null) {
+      measurements.push({
+        type: 'bg',
+        value: { value: Number(healthStats.latestRecord.blood_sugar), isFasting: Boolean(healthStats?.latestRecord?.blood_glucose_is_fasting) },
+        takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(),
+        source: 'manual'
+      })
     }
-    // 改为打开记录弹窗，由用户确认并保存RPE/时长等
+    if (healthStats?.latestRecord?.heart_rate != null) {
+      measurements.push({
+        type: 'hr',
+        value: Number(healthStats.latestRecord.heart_rate),
+        takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(),
+        source: 'manual'
+      })
+    }
+    const profile = buildUserProfile()
+    const gate = preExerciseGate(measurements, profile)
+    // 记录 Gate 事件
+    try {
+      const evt = await logGateEvent(user?.user_id, {
+        date: dateStr,
+        status: gate.status,
+        reasons: gate.reasons || [],
+        suggestedAction: gate.suggestedAction,
+        forcedStart: false,
+        prescription_id: prescription?.prescription_id
+      })
+      if (gate.status === 'red' || gate.status === 'yellow') {
+        showSafetyDialog({
+          status: gate.status,
+          reasons: gate.reasons || [],
+          suggestedAction: gate.suggestedAction,
+          context: 'exercise',
+          okText: '仍然开始',
+          cancelText: '取消',
+          onOk: async () => {
+            await updateGateEvent(evt?.event_id, { forcedStart: true })
+            setCompleteModalOpen(true)
+          }
+        })
+        return
+      }
+    } catch (_e) {
+      // 日志写入失败不阻断 UI
+    }
+    // 绿灯正常流程：打开记录弹窗，由用户确认并保存RPE/时长等
     setCompleteModalOpen(true)
   }
 
@@ -188,21 +252,62 @@ const ExercisePage = () => {
     if (!user) return
     const dateStr = ymd(date)
     const isDone = weekSummary.completedDates.includes(dateStr)
-    const gate = preExerciseGate({
-      sbp: healthStats?.latestRecord?.systolic,
-      dbp: healthStats?.latestRecord?.diastolic,
-      glucose: healthStats?.latestRecord?.blood_sugar,
-      ketonePositive: false,
-      onInsulinOrSecretagogue: Boolean(user?.onInsulinOrSecretagogue),
-      meds: [],
-      plannedLoad: (prescription?.fit?.intensity || '').includes('高') ? 'high' : 'moderate'
-    })
-    if (!gate.ok) {
-      Modal.error({ title: '暂缓运动', content: (<ul>{gate.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>) })
-      return
+    // 运动前安全闸门（canonical）
+    const measurements = []
+    if (healthStats?.latestRecord?.systolic != null && healthStats?.latestRecord?.diastolic != null) {
+      measurements.push({
+        type: 'bp',
+        value: { systolic: Number(healthStats.latestRecord.systolic), diastolic: Number(healthStats.latestRecord.diastolic) },
+        takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(),
+        source: 'manual'
+      })
     }
-    if (gate.caution) {
-      Modal.warning({ title: '注意事项', content: (<ul>{gate.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>) })
+    if (healthStats?.latestRecord?.blood_sugar != null) {
+      measurements.push({
+        type: 'bg',
+        value: { value: Number(healthStats.latestRecord.blood_sugar), isFasting: Boolean(healthStats?.latestRecord?.blood_glucose_is_fasting) },
+        takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(),
+        source: 'manual'
+      })
+    }
+    if (healthStats?.latestRecord?.heart_rate != null) {
+      measurements.push({
+        type: 'hr',
+        value: Number(healthStats.latestRecord.heart_rate),
+        takenAt: healthStats?.latestRecord?.timestamp || new Date().toISOString(),
+        source: 'manual'
+      })
+    }
+    const profile = buildUserProfile()
+    const gate = preExerciseGate(measurements, profile)
+    // 记录 Gate 事件
+    try {
+      const evt = await logGateEvent(user?.user_id, {
+        date: dateStr,
+        status: gate.status,
+        reasons: gate.reasons || [],
+        suggestedAction: gate.suggestedAction,
+        forcedStart: false,
+        prescription_id: prescription?.prescription_id
+      })
+      if (gate.status === 'red' || gate.status === 'yellow') {
+        showSafetyDialog({
+          status: gate.status,
+          reasons: gate.reasons || [],
+          suggestedAction: gate.suggestedAction,
+          context: 'exercise',
+          okText: '仍然开始',
+          cancelText: '取消',
+          onOk: async () => {
+            await updateGateEvent(evt?.event_id, { forcedStart: true })
+            await setExerciseCompletion(user.user_id, date, !isDone)
+            await reload()
+          }
+        })
+        return
+      }
+    } catch (_e) {
+      // 日志写入失败不阻断业务流程
     }
     await setExerciseCompletion(user.user_id, date, !isDone)
     await reload()
@@ -228,7 +333,7 @@ const ExercisePage = () => {
                   <Space direction="vertical">
                     <Text>年龄：{user?.age ?? '—'}</Text>
                     <Text>血压：{healthStats?.latestRecord?.systolic ?? '—'}/{healthStats?.latestRecord?.diastolic ?? '—'}（{healthStats?.bloodPressureStatus?.stage ?? '—'}）</Text>
-                    <Text>血糖：{healthStats?.latestRecord?.blood_sugar ?? '—'} mmol/L（{healthStats?.bloodSugarStatus?.isNormal ? '正常' : '异常'}）</Text>
+                    <Text>血糖：{healthStats?.latestRecord?.blood_sugar ?? '—'} mmol/L（{healthStats?.bloodSugarStatus?.isNormal ? '正常' : '异常'}，{healthStats?.latestRecord?.blood_glucose_is_fasting ? '空腹' : '随机'}）</Text>
                   </Space>
                 </Card>
               </Col>
@@ -257,7 +362,8 @@ const ExercisePage = () => {
                 <Space>
                   <Button type={running ? 'default' : 'primary'} onClick={() => setRunning(r => !r)}>{running ? '暂停' : '开始'}</Button>
                   <Button onClick={() => { setRunning(false); setElapsedSec(0) }}>重置</Button>
-                  <Button type="primary" onClick={() => setCompleteModalOpen(true)}>完成本次</Button>
+                  <Button type="primary" onClick={handleToggleToday}>完成本次</Button>
+                  <InlineGateBadge status={gatePreview?.status} reasons={gatePreview?.reasons} suggestedAction={gatePreview?.suggestedAction} context="exercise" />
                 </Space>
                 <div style={{ marginTop: 12 }}>
                   <Space direction="vertical" style={{ width:'100%' }}>

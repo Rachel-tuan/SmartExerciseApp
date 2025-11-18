@@ -5,8 +5,8 @@ import { MedicineBoxOutlined, PlusOutlined, EditOutlined, DeleteOutlined, Thunde
 import styled from 'styled-components';
 import { useHealthData } from '../contexts/HealthDataContext';
 import { useUser } from '../contexts/UserContext';
-import { generatePrescription } from '../engine';
-import { upsertPrescription } from '../models/storage';
+import { generatePrescription, ensureFourRules, getRuleMetaById } from '../engine';
+// 移除本地 localStorage 处方写入，统一通过 IndexedDB 的 addNewPrescription 保存
 import { updatePrescription as updateDbPrescription } from '../models';
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
@@ -52,7 +52,7 @@ const PrescriptionContainer = styled.div`
 `;
 
 const PrescriptionPage = () => {
-  const { activePrescription, addNewPrescription, getTodayData } = useHealthData();
+  const { activePrescription, addNewPrescription, getTodayData, buildUserProfile } = useHealthData();
   const { user } = useUser();
   const [prescriptions, setPrescriptions] = useState([]);
   const [exercisePrescription, setExercisePrescription] = useState(null);
@@ -60,6 +60,7 @@ const PrescriptionPage = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingPrescription, setEditingPrescription] = useState(null);
   const [form] = Form.useForm();
+  const [evidenceVisible, setEvidenceVisible] = useState(false);
 
   useEffect(() => {
     // 根据上下文的活跃处方刷新列表（仅展示活跃处方）
@@ -73,18 +74,8 @@ const PrescriptionPage = () => {
   const handleGenerateExercisePrescription = async () => {
     try {
       setGenerating(true);
-      // 映射用户档案到 UserProfile
-      const conditions = Array.isArray(user?.diseases) ? user.diseases : [];
-      const mhText = user?.medical_history || '';
-      const extra = mhText ? mhText.split(/[，,、；;\s]+/).filter(Boolean) : [];
-      const profile = {
-        age: Number(user?.age) || 0,
-        sex: (user?.gender === 'male' || user?.gender === 'female') ? user.gender : 'other',
-        height: user?.height != null ? Number(user.height) : undefined,
-        weight: user?.weight != null ? Number(user.weight) : undefined,
-        waist: user?.waist != null ? Number(user.waist) : undefined,
-        conditions: [...conditions, ...extra]
-      };
+      // 规范化的用户档案（英文条件编码）
+      const profile = buildUserProfile();
 
       // 将今日数据映射为 Measurement[]（若无则生成空数组）
       const today = getTodayData();
@@ -98,10 +89,9 @@ const PrescriptionPage = () => {
         });
       }
       if (today?.blood_sugar != null) {
-        // 引擎兼容 number 或 { value: number }
         measurements.push({
           type: 'bg',
-          value: Number(today.blood_sugar),
+          value: { value: Number(today.blood_sugar), isFasting: Boolean(today?.blood_glucose_is_fasting) },
           takenAt: today?.timestamp || new Date().toISOString(),
           source: 'manual'
         });
@@ -116,7 +106,9 @@ const PrescriptionPage = () => {
       }
 
       const pr = generatePrescription(profile, measurements);
-      setExercisePrescription(pr);
+      const rulesForUi = ensureFourRules(pr.rules || [], profile, measurements);
+      const prForUi = { ...pr, rules_for_ui: rulesForUi };
+      setExercisePrescription(prForUi);
     } catch (e) {
       Modal.error({ title: '生成失败', content: e?.message || '生成运动处方时出现错误' });
     } finally {
@@ -127,8 +119,17 @@ const PrescriptionPage = () => {
   const handleSaveExercisePrescription = async () => {
     if (!exercisePrescription) return;
     try {
-      await upsertPrescription(exercisePrescription);
-      Modal.success({ title: '已保存', content: '智能运动处方已保存到本地' });
+      const end = new Date();
+      end.setDate(end.getDate() + 30);
+      await addNewPrescription({
+        fit: { ...exercisePrescription.fit },
+        rules: Array.isArray(exercisePrescription.rules) ? exercisePrescription.rules : [],
+        rules_for_ui: Array.isArray(exercisePrescription.rules_for_ui) ? exercisePrescription.rules_for_ui : [],
+        explain: exercisePrescription.explain,
+        end_date: end.toISOString(),
+        plan: { weekly: { sessionMinutes: Number(exercisePrescription.fit?.time) || 30 } }
+      });
+      Modal.success({ title: '已保存', content: '智能运动处方已保存（全局）' });
     } catch (e) {
       Modal.error({ title: '保存失败', content: e?.message || '保存运动处方时出现错误' });
     }
@@ -227,6 +228,7 @@ const PrescriptionPage = () => {
               智能生成运动处方
             </Button>
             <Button disabled={!exercisePrescription} onClick={handleSaveExercisePrescription}>保存到我的处方</Button>
+            <Button disabled={!exercisePrescription} onClick={() => setEvidenceVisible(true)}>循证说明</Button>
           </Space>
         }>
           {exercisePrescription ? (
@@ -264,11 +266,56 @@ const PrescriptionPage = () => {
                   <Tag key={id} color="default">{id}</Tag>
                 ))}
               </Space>
+              {Array.isArray(exercisePrescription.explain?.top) && exercisePrescription.explain.top.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">贡献排行：</Text>
+                  <Space wrap style={{ marginLeft: 8 }}>
+                    {exercisePrescription.explain.top.map((t, idx) => (
+                      <Tag key={idx} color="blue">{t.id}: {Math.round(t.score)}</Tag>
+                    ))}
+                  </Space>
+                </div>
+              )}
             </>
           ) : (
             <Text type="secondary">点击上方按钮，智能生成匹配您的运动处方</Text>
           )}
         </Card>
+
+        <Modal
+          title="当前处方循证说明"
+          open={evidenceVisible}
+          onCancel={() => setEvidenceVisible(false)}
+          footer={<Space><Button type="primary" onClick={() => setEvidenceVisible(false)}>关闭</Button></Space>}
+        >
+          {exercisePrescription ? (
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Text type="secondary">{(Array.isArray(exercisePrescription.rules) && exercisePrescription.rules.length > 0) ? '展示实际处方规则对应的循证条目。' : '当前处方无真实规则编号'}</Text>
+              <List
+                dataSource={((exercisePrescription.rules || []).map(id => getRuleMetaById(id)).filter(Boolean))}
+                renderItem={(item) => (
+                  <List.Item key={item.id}>
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      <Space>
+                        <Text strong>{item.id}</Text>
+                        <Tag>{item.name}</Tag>
+                      </Space>
+                      {Array.isArray(item.evidence) && item.evidence.length > 0 && (
+                        <Space wrap>
+                          {item.evidence.map((ev, i) => (
+                            <Tag key={`${item.id}-${i}`} color="geekblue">{ev}</Tag>
+                          ))}
+                        </Space>
+                      )}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            </Space>
+          ) : (
+            <Text type="secondary">暂无处方规则</Text>
+          )}
+        </Modal>
 
         {prescriptions.map((prescription) => (
           <Card

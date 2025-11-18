@@ -2,7 +2,7 @@ import { openDB } from 'idb';
 import { nanoid } from 'nanoid';
 
 const DB_NAME = 'zkl_db';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 // 示例数据
 const SAMPLE_DATA = {
@@ -162,6 +162,9 @@ export async function initDB() {
       }
       if (!db.objectStoreNames.contains('measurements_audit_log')) {
         db.createObjectStore('measurements_audit_log', { keyPath: 'audit_id' });
+      }
+      if (!db.objectStoreNames.contains('crf_audit_logs')) {
+        db.createObjectStore('crf_audit_logs', { keyPath: 'crf_audit_id' });
       }
 
       // 初始化示例数据
@@ -358,4 +361,29 @@ export async function saveAuditLog({ audit_id, user_id, action, status, reason, 
   await store.put(log);
   await tx.done;
   return log;
+}
+
+export async function saveCRFAuditLog({ crf_audit_id, timestamp, admin, action, old_config, new_config }) {
+  const db = await initDB();
+  const tx = db.transaction('crf_audit_logs', 'readwrite');
+  const store = tx.objectStore('crf_audit_logs');
+  const log = {
+    crf_audit_id: crf_audit_id || nanoid(),
+    timestamp: timestamp || new Date().toISOString(),
+    admin: admin || undefined,
+    action,
+    old_config: old_config || undefined,
+    new_config: new_config || undefined
+  };
+  await store.put(log);
+  await tx.done;
+  return log;
+}
+
+export async function getCRFAuditLogs() {
+  const db = await initDB();
+  const tx = db.transaction('crf_audit_logs', 'readonly');
+  const store = tx.objectStore('crf_audit_logs');
+  const logs = await store.getAll();
+  return logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 }

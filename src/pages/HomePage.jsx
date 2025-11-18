@@ -13,9 +13,8 @@ import styled from 'styled-components';
 import { useUser } from '../contexts/UserContext';
 import { useHealthData } from '../contexts/HealthDataContext';
 import FreshnessBadge from '../components/FreshnessBadge';
-import { preExerciseGate } from '../engine';
-// 处方（FITT/规则）的展示仍来源于本地存储的运动处方
-import { getPrescriptions as getExercisePrescriptions } from '../models/storage';
+import { preExerciseGate, getRuleMetaById, getRuleRecommendedFitById, getRulePriorityById } from '../engine';
+import { getActivePrescription } from '../models';
 // gate 事件改用 IndexedDB 封装
 import { logGateEvent, updateGateEvent } from '../models';
 import { useVoiceAssist } from '../components/useVoiceAssist';
@@ -88,13 +87,13 @@ const VoiceButton = styled(Button)`
 const HomePage = () => {
   const navigate = useNavigate();
   const { user, voiceEnabled } = useUser();
-  const { getTodayData } = useHealthData();
+  const { getTodayData, buildUserProfile } = useHealthData();
   const { speak, cancel, speaking, supported } = useVoiceAssist({ lang: 'zh-CN', rate: 0.85 });
   const [exercisePrescription, setExercisePrescription] = useState(null);
 
   // 获取今日数据
   const todayData = getTodayData();
-  
+
   // 简化首页：不计算评分与建议，仅展示最近测量与三大按钮
 
   // 语音播报健康状态
@@ -114,17 +113,13 @@ const HomePage = () => {
   useEffect(() => {
     (async () => {
       try {
-        const list = await getExercisePrescriptions();
-        if (Array.isArray(list) && list.length > 0) {
-          setExercisePrescription(list[0]); // 最近保存的运动处方（含 FITT/规则）
-        } else {
-          setExercisePrescription(null);
-        }
+        const rx = await getActivePrescription(user?.user_id);
+        setExercisePrescription(rx || null);
       } catch (_e) {
         setExercisePrescription(null);
       }
     })();
-  }, []);
+  }, [user?.user_id]);
 
   return (
     <HomeContainer>
@@ -170,7 +165,37 @@ const HomePage = () => {
               <Space wrap>
                 <Text type="secondary">规则编号：</Text>
                 {(exercisePrescription?.rules || []).map(id => (
-                  <Button key={id} size="small">{id}</Button>
+                  <Button
+                    key={id}
+                    size="small"
+                    onClick={() => {
+                      const meta = getRuleMetaById(id);
+                      if (meta) {
+                        const fit = getRuleRecommendedFitById(id);
+                        Modal.info({
+                          title: meta.name,
+                          content: (
+                            <div>
+                              <p>编号：{meta.id}</p>
+                              <p>来源：{meta.source}</p>
+                              {fit && (
+                                <div style={{ marginTop: 8 }}>
+                                  <p>推荐频率：每周 {fit.freq} 次</p>
+                                  <p>推荐强度：{fit.intensity}</p>
+                                  <p>推荐时长：每次 {fit.time} 分钟</p>
+                                  <p>推荐类型：{fit.type}</p>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        });
+                      } else {
+                        Modal.info({ title: '规则说明', content: `未找到编号 ${id} 的规则说明` });
+                      }
+                    }}
+                  >
+                    {id}
+                  </Button>
                 ))}
               </Space>
             </Space>
@@ -194,7 +219,7 @@ const HomePage = () => {
               if (todayData?.blood_sugar != null) {
                 measurements.push({
                   type: 'bg',
-                  value: { value: Number(todayData.blood_sugar) },
+                  value: { value: Number(todayData.blood_sugar), isFasting: Boolean(todayData?.blood_glucose_is_fasting) },
                   takenAt: todayData?.timestamp || new Date().toISOString(),
                   source: 'manual'
                 });
@@ -209,14 +234,7 @@ const HomePage = () => {
               }
 
               // 映射用户档案到 UserProfile
-              const profile = {
-                age: Number(user?.age) || 0,
-                sex: (user?.gender === 'male' || user?.gender === 'female') ? user.gender : 'other',
-                height: Number(user?.height) || undefined,
-                weight: Number(user?.weight) || undefined,
-                waist: Number(user?.waist) || undefined,
-                conditions: Array.isArray(user?.diseases) ? user.diseases : []
-              };
+              const profile = buildUserProfile();
 
               const gate = preExerciseGate(measurements, profile);
               const today = new Date();
@@ -231,7 +249,7 @@ const HomePage = () => {
                 reasons: gate.reasons || [],
                 suggestedAction: gate.suggestedAction,
                 forcedStart: false,
-                prescriptionId: exercisePrescription?.id || exercisePrescription?.prescription_id
+                prescription_id: exercisePrescription?.prescription_id
               });
 
               if (gate.status === 'red') {
@@ -299,9 +317,9 @@ const HomePage = () => {
 
         {/* 语音播报按钮 */}
         {voiceEnabled && supported && (
-          <VoiceButton 
+          <VoiceButton
             type="primary"
-            icon={<SoundOutlined />} 
+            icon={<SoundOutlined />}
             onClick={speakHealthStatus}
             loading={speaking}
           />

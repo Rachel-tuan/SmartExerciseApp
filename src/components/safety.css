@@ -1,0 +1,41 @@
+/*\n+ * Safety Gate UI Style Spec\n+ *\n+ * Design tokens:\n+ * --gate-green: 安全绿\n+ * --gate-yellow: 提醒黄\n+ * --gate-red: 阻断红\n+ *\n+ * Common classes:\n+ * .gate-indicator    组件外层（Badge）\n+ * .gate-tag          组件外层（Tag）\n+ * .gate-dot          小圆点（InlineGateBadge）\n+ * .gate-green/.gate-yellow/.gate-red 状态修饰\n+ *\n+ * Apply by wrapping component root with gate-<status> class.\n+ */
+:root {
+  --gate-green: #16a34a;
+  --gate-yellow: #f59e0b;
+  --gate-red: #ef4444;
+  --gate-text: #334155;
+}
+
+.gate-indicator, .gate-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Override Ant Badge status colors when wrapped */
+.gate-indicator.gate-green .ant-badge-status-dot { background-color: var(--gate-green) !important; }
+.gate-indicator.gate-green .ant-badge-status-text { color: var(--gate-text); }
+.gate-indicator.gate-yellow .ant-badge-status-dot { background-color: var(--gate-yellow) !important; }
+.gate-indicator.gate-yellow .ant-badge-status-text { color: var(--gate-text); }
+.gate-indicator.gate-red .ant-badge-status-dot { background-color: var(--gate-red) !important; }
+.gate-indicator.gate-red .ant-badge-status-text { color: var(--gate-text); }
+
+/* InlineGateBadge dot */
+.gate-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.gate-tag.gate-green .gate-dot { background-color: var(--gate-green); }
+.gate-tag.gate-yellow .gate-dot { background-color: var(--gate-yellow); }
+.gate-tag.gate-red .gate-dot { background-color: var(--gate-red); }
+
+/* Tag background harmonized */
+.gate-tag.gate-green .ant-tag { background-color: rgba(22, 163, 74, 0.12); color: var(--gate-text); border-color: rgba(22, 163, 74, 0.2); }
+.gate-tag.gate-yellow .ant-tag { background-color: rgba(245, 158, 11, 0.12); color: var(--gate-text); border-color: rgba(245, 158, 11, 0.2); }
+.gate-tag.gate-red .ant-tag { background-color: rgba(239, 68, 68, 0.12); color: var(--gate-text); border-color: rgba(239, 68, 68, 0.2); }
+
+/* Dialog content typography */
+.gate-dialog .reasons { padding-left: 18px; }
+.gate-dialog .suggest { margin-top: 8px; color: var(--gate-text); }

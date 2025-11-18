@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { App as AntdApp, Card, Typography, Space, Descriptions, Divider, Form, Input, InputNumber, Switch, Button, Empty } from 'antd';
+import { App as AntdApp, Card, Typography, Space, Descriptions, Divider, Form, Input, InputNumber, Switch, Button, Empty, Row, Col, Modal, List, Tag } from 'antd';
+import { setCRFConfig, getCRFConfig, listRulesMeta, buildAuditMarkdownWithEvidence, generateAuditCSV, getRuleMetaById, getRulePriorityById } from '../engine';
+import { getCRFAuditLogs, saveCRFAuditLog } from '../models';
 import { useHealthData } from '../contexts/HealthDataContext';
 import { useUser } from '../contexts/UserContext';
 import { getWeeklyExerciseSummary, getExerciseLogs, getGateEvents, getPrescriptions } from '../models';
@@ -7,9 +9,9 @@ import { startOfWeek } from 'date-fns';
 
 const { Title, Text } = Typography;
 
-export default function AdminPage(){
+export default function AdminPage() {
   const { message } = AntdApp.useApp();
-  const { healthStats, getAuditLogs } = useHealthData();
+  const { healthStats, getAuditLogs, updateCRFOptions } = useHealthData();
   const { user } = useUser();
   const [kpi, setKpi] = useState({
     weeklyCompletion: 0,
@@ -20,8 +22,72 @@ export default function AdminPage(){
   });
   const [coachPlan, setCoachPlan] = useState({ intensity: '', type: '' });
   const [latestPrescription, setLatestPrescription] = useState(null);
+  const [crfForm] = Form.useForm();
+  const [ruleForm] = Form.useForm();
+  const [crfHelpOpen, setCrfHelpOpen] = useState(false);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [evidenceMode, setEvidenceMode] = useState('current');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyList, setHistoryList] = useState([]);
+  const CRF_PRESETS = useMemo(() => ({
+    standard: { alpha: 1.0, beta: 0.10, priorityFactors: { 8: 1.25, 7: 1.12, 6: 1.00, 5: 0.90 } },
+    conservative: { alpha: 1.2, beta: 0.15, priorityFactors: { 8: 1.35, 7: 1.20, 6: 1.00, 5: 0.85 } },
+    aggressive: { alpha: 0.9, beta: 0.05, priorityFactors: { 8: 1.15, 7: 1.05, 6: 1.00, 5: 0.95 } }
+  }), []);
+  const applyPreset = async (key) => {
+    const p = CRF_PRESETS[key];
+    if (!p) return;
+    crfForm.setFieldsValue({ alpha: p.alpha, beta: p.beta, priorityFactors: JSON.stringify(p.priorityFactors) });
+    const oldCfg = getCRFConfig();
+    await saveCRFAuditLog({ admin: user?.name || user?.username || user?.user_id, action: 'before_update', old_config: oldCfg });
+    setCRFConfig({ alpha: p.alpha, beta: p.beta, priorityFactors: p.priorityFactors });
+    updateCRFOptions({ USE_CRF: true, alpha: p.alpha, beta: p.beta, priorityFactors: p.priorityFactors });
+    await saveCRFAuditLog({ admin: user?.name || user?.username || user?.user_id, action: 'after_update', old_config: oldCfg, new_config: { alpha: p.alpha, beta: p.beta, priorityFactors: p.priorityFactors } });
+    message.success(`已应用预设：${key === 'standard' ? '标准' : key === 'conservative' ? '保守' : '积极'}`);
+  };
 
   const weekStart = useMemo(() => startOfWeek(new Date(), { weekStartsOn: 1 }), []);
+
+  const RULE_CONFIG_KEY = 'admin_rule_config';
+  const DEFAULT_RULE_CONFIG = useMemo(() => ({
+    bp_sys_high: 140,
+    bp_dia_high: 90,
+    bs_fpg_high: 7.0,
+    bs_low: 3.9,
+    enable_alerts: true
+  }), []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(RULE_CONFIG_KEY);
+      if (saved) {
+        const vals = JSON.parse(saved);
+        ruleForm.setFieldsValue({
+          bp_sys_high: Number(vals.bp_sys_high),
+          bp_dia_high: Number(vals.bp_dia_high),
+          bs_fpg_high: Number(vals.bs_fpg_high),
+          bs_low: Number(vals.bs_low),
+          enable_alerts: !!vals.enable_alerts
+        });
+      } else {
+        ruleForm.setFieldsValue(DEFAULT_RULE_CONFIG);
+      }
+    } catch (_e) {
+      ruleForm.setFieldsValue(DEFAULT_RULE_CONFIG);
+    }
+  }, [ruleForm, DEFAULT_RULE_CONFIG]);
+
+  const handleSaveRules = () => {
+    const vals = ruleForm.getFieldsValue();
+    localStorage.setItem(RULE_CONFIG_KEY, JSON.stringify(vals));
+    message.success('规则已保存');
+  };
+
+  const handleResetRules = () => {
+    ruleForm.setFieldsValue(DEFAULT_RULE_CONFIG);
+    localStorage.removeItem(RULE_CONFIG_KEY);
+    message.success('已恢复默认');
+  };
 
   useEffect(() => {
     (async () => {
@@ -98,7 +164,7 @@ export default function AdminPage(){
       const events = await getGateEvents(user.user_id);
       const filtered = filterLastNDays(events, 30);
       if (!Array.isArray(filtered) || filtered.length === 0) { message.info('最近30天无 Gate 事件'); return; }
-      const rows = [['event_id','date','status','forcedStart','reasons','suggestedAction','prescription_id']];
+      const rows = [['event_id', 'date', 'status', 'forcedStart', 'reasons', 'suggestedAction', 'prescription_id']];
       for (const e of filtered) {
         rows.push([
           e.event_id || '',
@@ -110,7 +176,7 @@ export default function AdminPage(){
           e.prescription_id || ''
         ]);
       }
-      const csv = rows.map(r => r.map(cell => ("\"" + String(cell).replace(/"/g,'""') + "\"")) .join(',')).join('\n');
+      const csv = rows.map(r => r.map(cell => ("\"" + String(cell).replace(/"/g, '""') + "\"")).join(',')).join('\n');
       downloadBlob(csv, 'audit_gate_events.csv', 'text/csv;charset=utf-8;');
     } catch (e) {
       message.error('CSV 导出失败');
@@ -161,17 +227,17 @@ export default function AdminPage(){
   };
 
   return (
-    <div style={{padding:16}}>
-      <Space direction="vertical" size="large" style={{width:'100%'}}>
+    <div style={{ padding: 16 }}>
+      <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <Title level={3}>管理面板 Admin</Title>
 
         <Card title="KPI 指标概览" variant="outlined">
-          <div style={{marginBottom:16}}>
+          <div style={{ marginBottom: 16 }}>
             {healthStats ? (
               <Descriptions column={1} size="middle">
-                <Descriptions.Item label="血压是否正常">{healthStats.bloodPressureStatus?.isNormal? '正常':'异常'}</Descriptions.Item>
+                <Descriptions.Item label="血压是否正常">{healthStats.bloodPressureStatus?.isNormal ? '正常' : '异常'}</Descriptions.Item>
                 <Descriptions.Item label="血压等级">{healthStats.bloodPressureStatus?.category || '未知'}</Descriptions.Item>
-                <Descriptions.Item label="血糖是否正常">{healthStats.bloodSugarStatus?.isNormal? '正常':'异常'}</Descriptions.Item>
+                <Descriptions.Item label="血糖是否正常">{healthStats.bloodSugarStatus?.isNormal ? '正常' : '异常'}</Descriptions.Item>
                 <Descriptions.Item label="血糖等级">{healthStats.bloodSugarStatus?.category || '未知'}</Descriptions.Item>
                 <Descriptions.Item label="BMI 分类">{healthStats.bmiCategory || '未知'}</Descriptions.Item>
                 <Descriptions.Item label="周完成率">{kpi.weeklyCompletion}%</Descriptions.Item>
@@ -184,13 +250,150 @@ export default function AdminPage(){
               <Empty description={<Text type="secondary">暂无统计数据</Text>} />
             )}
           </div>
-          <Space>
-            <Button type="primary" onClick={exportAudit}>一键导出审计单</Button>
-            <Button onClick={exportCSV}>导出 CSV</Button>
-            <Button onClick={exportJSON}>导出 JSON</Button>
-            <Button onClick={printMeasurementAudit}>打印测量审计日志</Button>
-            <Button onClick={exportMeasurementAuditMarkdown}>下载测量审计 Markdown</Button>
+          <div>
+            <Row gutter={[20, 16]}>
+              <Col xs={12} sm={12} md={12} lg={12} xl={12}>
+                <Button type="primary" onClick={exportAudit} style={{ width: '100%' }}>一键导出审计单</Button>
+              </Col>
+              <Col xs={12} sm={12} md={12} lg={12} xl={12}>
+                <Button onClick={exportCSV} style={{ width: '100%' }}>导出 CSV</Button>
+              </Col>
+              <Col xs={12} sm={12} md={12} lg={12} xl={12}>
+                <Button onClick={exportJSON} style={{ width: '100%' }}>导出 JSON</Button>
+              </Col>
+              <Col xs={12} sm={12} md={12} lg={12} xl={12}>
+                <Button onClick={printMeasurementAudit} style={{ width: '100%' }}>打印测量审计日志</Button>
+              </Col>
+            </Row>
+            <div style={{ marginTop: 16 }}>
+              <Button onClick={exportMeasurementAuditMarkdown}>下载测量审计 Markdown</Button>
+            </div>
+          </div>
+        </Card>
+
+        <Card title="CRF 融合调参" variant="outlined" extra={<Space><Button onClick={() => setCrfHelpOpen(true)}>说明</Button><Button onClick={() => setEvidenceOpen(true)}>循证说明</Button><Button onClick={async () => { const list = await getCRFAuditLogs(); setHistoryList(list); setHistoryOpen(true); }}>查看配置历史</Button><Button onClick={async () => { const logs = await getCRFAuditLogs(); const csv = generateAuditCSV(logs); downloadBlob(csv, 'crf_audit_logs.csv', 'text/csv;charset=utf-8;'); const md = buildAuditMarkdownWithEvidence({ user, kpi, recent: [], prescription: latestPrescription, coachPlan }); downloadBlob(md, 'audit_rules_evidence.md', 'text/markdown'); }}>导出审计记录</Button></Space>}>
+          <Space style={{ marginBottom: 12 }}>
+            <Text type="secondary">管理员预设：</Text>
+            <Button size="small" onClick={() => applyPreset('standard')}>标准</Button>
+            <Button size="small" onClick={() => applyPreset('conservative')}>保守</Button>
+            <Button size="small" onClick={() => applyPreset('aggressive')}>积极</Button>
           </Space>
+          <Form form={crfForm} layout="vertical" initialValues={{ alpha: getCRFConfig().alpha, beta: getCRFConfig().beta, priorityFactors: JSON.stringify(getCRFConfig().priorityFactors || {}) }}
+            onFinish={async (vals) => {
+              const raw = String(vals.priorityFactors || '').trim();
+              let pf = {};
+              if (raw) {
+                try {
+                  pf = JSON.parse(raw);
+                } catch (_e) {
+                  const obj = {};
+                  raw.split(',').map(s => s.trim()).filter(Boolean).forEach(pair => {
+                    const [k, v] = pair.split(':').map(x => x.trim());
+                    if (k && v && !Number.isNaN(Number(v))) obj[Number(k)] = Number(v);
+                  });
+                  pf = obj;
+                }
+              }
+              const cfg = { alpha: Number(vals.alpha), beta: Number(vals.beta), priorityFactors: pf };
+              const oldCfg = getCRFConfig();
+              await saveCRFAuditLog({ admin: user?.name || user?.username || user?.user_id, action: 'before_update', old_config: oldCfg });
+              setCRFConfig(cfg);
+              updateCRFOptions({ USE_CRF: true, ...cfg });
+              await saveCRFAuditLog({ admin: user?.name || user?.username || user?.user_id, action: 'after_update', old_config: oldCfg, new_config: cfg });
+              message.success('已应用新的权重配置');
+            }}
+          >
+            <Form.Item label="alpha" name="alpha">
+              <InputNumber min={0} max={10} step={0.1} />
+            </Form.Item>
+            <Form.Item label="beta" name="beta">
+              <InputNumber min={0} max={10} step={0.1} />
+            </Form.Item>
+            <Form.Item label="priorityFactors(JSON)" name="priorityFactors">
+              <Input placeholder='例如 8:1.1, 7:0.9' />
+            </Form.Item>
+            <Space>
+              <Button type="primary" htmlType="submit">应用</Button>
+              <Text type="secondary">说明：点击后更新权重配置，不会立即更改已保存处方</Text>
+            </Space>
+          </Form>
+          <Modal title="CRF 参数说明" open={crfHelpOpen} onCancel={() => setCrfHelpOpen(false)} footer={<Button type="primary" onClick={() => setCrfHelpOpen(false)}>关闭</Button>}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Text type="secondary">高级设置（管理员）：普通用户无需更改此处参数。调整后请在处方页重新生成查看影响。</Text>
+              <Descriptions column={1} size="small" title="参数解释">
+                <Descriptions.Item label="alpha">规则自重系数：越大越强调单条规则的原始建议（建议 0.8–1.5）</Descriptions.Item>
+                <Descriptions.Item label="beta">协同系数：越大越趋向多规则的平均与温和（建议 0–0.4）</Descriptions.Item>
+                <Descriptions.Item label="priorityFactors">优先级系数：键为优先级数字；支持 JSON 或简写（如 8:1.25, 7:1.12）；不熟悉可留空（默认不调整）</Descriptions.Item>
+                <Descriptions.Item label="预设模式">标准：alpha=1.0, beta=0.10, PF 8:1.25,7:1.12,6:1.00,5:0.90；保守：alpha=1.2, beta=0.15, PF 8:1.35,7:1.20,6:1.00,5:0.85；积极：alpha=0.9, beta=0.05, PF 8:1.15,7:1.05,6:1.00,5:0.95</Descriptions.Item>
+                <Descriptions.Item label="审计与回滚">每次更新会记录到配置历史（查看配置历史按钮）；可从历史记录一键应用任意版本实现回滚。</Descriptions.Item>
+                <Descriptions.Item label="生效范围">更新仅影响后续新生成的处方，不会修改已保存处方。</Descriptions.Item>
+                <Descriptions.Item label="安全闸门">红灯时自动降为低强度；当前红灯判定示例：收缩压≥180 或舒张压≥110 等严重异常。</Descriptions.Item>
+              </Descriptions>
+            </Space>
+          </Modal>
+          <Modal title="CRF 配置历史" open={historyOpen} onCancel={() => setHistoryOpen(false)} footer={<Button type="primary" onClick={() => setHistoryOpen(false)}>关闭</Button>}>
+            <List
+              dataSource={historyList}
+              renderItem={(item) => (
+                <List.Item key={item.crf_audit_id}>
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <Space>
+                      <Tag color="blue">{new Date(item.timestamp).toLocaleString()}</Tag>
+                      <Tag>{item.admin || '—'}</Tag>
+                      <Tag color="geekblue">{item.action}</Tag>
+                    </Space>
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      {item.old_config && (<Typography.Paragraph copyable>{JSON.stringify(item.old_config)}</Typography.Paragraph>)}
+                      {item.new_config && (<Typography.Paragraph copyable>{JSON.stringify(item.new_config)}</Typography.Paragraph>)}
+                      <Button size="small" onClick={async () => {
+                        const target = item.new_config || item.old_config;
+                        if (!target) return;
+                        const oldCfg = getCRFConfig();
+                        await saveCRFAuditLog({ admin: user?.name || user?.username || user?.user_id, action: 'rollback_before', old_config: oldCfg });
+                        setCRFConfig(target);
+                        updateCRFOptions({ USE_CRF: true, ...target });
+                        await saveCRFAuditLog({ admin: user?.name || user?.username || user?.user_id, action: 'rollback_after', old_config: oldCfg, new_config: target });
+                        message.success('已回滚到该版本');
+                      }}>应用该版本</Button>
+                    </Space>
+                  </Space>
+                </List.Item>
+              )}
+            />
+          </Modal>
+          <Modal title={evidenceMode === 'current' ? '当前处方循证说明' : '常见规则库循证说明'} open={evidenceOpen} onCancel={() => setEvidenceOpen(false)} footer={<Space><Button onClick={() => setEvidenceMode(evidenceMode === 'current' ? 'library' : 'current')}>{evidenceMode === 'current' ? '查看常见规则库' : '显示当前处方规则'}</Button><Button type="primary" onClick={() => setEvidenceOpen(false)}>关闭</Button></Space>}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Text type="secondary">{evidenceMode === 'current' ? '默认展示当前处方规则的循证条目；可切换查看常见规则库。' : '当前为常见规则库循证清单；如需返回当前处方规则，请点击切换按钮。'}</Text>
+              <List
+                dataSource={evidenceMode === 'current' ? ((latestPrescription?.rules || []).map(id => getRuleMetaById(id)).filter(Boolean)) : listRulesMeta().sort((a, b) => b.priority - a.priority)}
+                renderItem={(item) => (
+                  <List.Item key={item.id}>
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      <Space>
+                        <Text strong>{item.id}</Text>
+                        <Tag>{item.name}</Tag>
+                        <Tag color="blue">P{getRulePriorityById(item.id)}</Tag>
+                      </Space>
+                      {Array.isArray(item.evidence) && item.evidence.length > 0 && (
+                        <Space wrap>
+                          {item.evidence.map((ev, i) => (
+                            <Tag key={`${item.id}-${i}`} color="geekblue">{ev}</Tag>
+                          ))}
+                        </Space>
+                      )}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            </Space>
+          </Modal>
+          {latestPrescription && Array.isArray(latestPrescription.explain?.top) && latestPrescription.explain.top.length > 0 && (
+            <Descriptions column={1} size="small" title="贡献Top3">
+              {latestPrescription.explain.top.slice(0, 3).map((t, i) => (
+                <Descriptions.Item key={i} label={t.id}>{Math.round(t.score)}</Descriptions.Item>
+              ))}
+            </Descriptions>
+          )}
         </Card>
 
         <Card title="导师计划（占位）对比" variant="outlined">
@@ -210,24 +413,24 @@ export default function AdminPage(){
               <Descriptions.Item label="强度">{latestPrescription.fit?.intensity ?? '—'}</Descriptions.Item>
               <Descriptions.Item label="时长">每次 {latestPrescription.fit?.time ?? '—'} 分钟</Descriptions.Item>
               <Descriptions.Item label="类型">{latestPrescription.fit?.type ?? '—'}</Descriptions.Item>
-              <Descriptions.Item label="规则编号">{(latestPrescription.rules || []).join('、') || '—'}</Descriptions.Item>
+              <Descriptions.Item label="规则编号">{((latestPrescription.rules || []).join('、')) || '—'}</Descriptions.Item>
             </Descriptions>
           )}
         </Card>
 
         <Card title="规则配置占位" variant="outlined">
-          <Form layout="vertical">
+          <Form layout="vertical" form={ruleForm}>
             <Form.Item label="高血压阈值 (收缩压)" name="bp_sys_high" initialValue={140}>
-              <InputNumber style={{width:'100%'}} min={80} max={220} />
+              <InputNumber style={{ width: '100%' }} min={80} max={220} />
             </Form.Item>
             <Form.Item label="高血压阈值 (舒张压)" name="bp_dia_high" initialValue={90}>
-              <InputNumber style={{width:'100%'}} min={40} max={140} />
+              <InputNumber style={{ width: '100%' }} min={40} max={140} />
             </Form.Item>
             <Form.Item label="高血糖阈值 (空腹)" name="bs_fpg_high" initialValue={7.0}>
-              <InputNumber style={{width:'100%'}} step={0.1} min={3} max={20} />
+              <InputNumber style={{ width: '100%' }} step={0.1} min={3} max={20} />
             </Form.Item>
             <Form.Item label="低血糖阈值" name="bs_low" initialValue={3.9}>
-              <InputNumber style={{width:'100%'}} step={0.1} min={2} max={6} />
+              <InputNumber style={{ width: '100%' }} step={0.1} min={2} max={6} />
             </Form.Item>
             <Divider />
             <Form.Item label="启用异常提醒" name="enable_alerts" valuePropName="checked" initialValue={true}>
@@ -235,8 +438,8 @@ export default function AdminPage(){
             </Form.Item>
             <Form.Item>
               <Space>
-                <Button type="primary">保存规则</Button>
-                <Button>恢复默认</Button>
+                <Button type="primary" onClick={handleSaveRules}>保存规则</Button>
+                <Button onClick={handleResetRules}>恢复默认</Button>
               </Space>
             </Form.Item>
           </Form>

@@ -14,6 +14,8 @@ import {
   getHealthStats,
   getAuditLogs
 } from '../models';
+import { normalizeConditions, extractConditionsFromText } from '../utils/conditions';
+import { setCRFConfig, getCRFConfig } from '../engine';
 
 const HealthDataContext = createContext();
 
@@ -34,6 +36,14 @@ export const HealthDataProvider = ({ children }) => {
   const [healthStats, setHealthStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [crfOptions, setCrfOptions] = useState(() => {
+    try {
+      const raw = localStorage.getItem('crf_options');
+      return raw ? JSON.parse(raw) : { USE_CRF: true, alpha: 1, beta: 0.1, priorityFactors: { 8: 1.25, 7: 1.12, 6: 1.0, 5: 0.9 } };
+    } catch (_e) {
+      return { USE_CRF: true, alpha: 1, beta: 0.1, priorityFactors: { 8: 1.25, 7: 1.12, 6: 1.0, 5: 0.9 } };
+    }
+  });
 
   // 刷新所有数据
   const refreshData = async () => {
@@ -70,6 +80,11 @@ export const HealthDataProvider = ({ children }) => {
       refreshData();
     }
   }, [user]);
+
+  useEffect(() => {
+    try { localStorage.setItem('crf_options', JSON.stringify(crfOptions)); } catch (_e) {}
+    setCRFConfig(crfOptions);
+  }, [crfOptions]);
 
   // 添加健康记录
   const addRecord = async (recordData) => {
@@ -183,6 +198,22 @@ export const HealthDataProvider = ({ children }) => {
     return Math.round(score);
   };
 
+  // 构建供引擎/规则使用的 UserProfile（规范化 conditions 为英文代码）
+  const buildUserProfile = () => {
+    const conditions = Array.isArray(user?.diseases) ? user.diseases : [];
+    const mhText = user?.medical_history || user?.medicalHistory || '';
+    const extras = extractConditionsFromText(mhText);
+    const canonical = normalizeConditions([...(conditions || []), ...extras]);
+    return {
+      age: Number(user?.age) || 0,
+      sex: (user?.gender === 'male' || user?.gender === 'female') ? user.gender : 'other',
+      height: user?.height != null ? Number(user.height) : undefined,
+      weight: user?.weight != null ? Number(user.weight) : undefined,
+      waist: user?.waist != null ? Number(user.waist) : undefined,
+      conditions: canonical
+    };
+  };
+
   const value = {
     healthRecords,
     activePrescription,
@@ -207,6 +238,9 @@ export const HealthDataProvider = ({ children }) => {
     addNote,
     getTodayData,
     getHealthScore
+    ,buildUserProfile
+    ,getCRFOptions: () => ({ ...getCRFConfig() })
+    ,updateCRFOptions: (opts) => setCrfOptions(prev => ({ ...prev, ...opts }))
   };
 
   return (

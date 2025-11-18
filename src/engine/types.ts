@@ -22,6 +22,7 @@ export interface PrescriptionRule {
   name: string;
   source: string;
   priority: number;
+  evidence?: string[];
   condition: (profile: UserProfile, measurements: Measurement[]) => boolean;
   action: (profile: UserProfile, measurements: Measurement[]) => Partial<Prescription>;
 }

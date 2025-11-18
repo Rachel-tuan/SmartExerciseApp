@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Form, Input, Button, Switch, Space, Typography, message, Divider, Select, Modal, InputNumber } from 'antd';
+import { Card, Form, Input, Button, Switch, Space, Typography, message, Divider, Select, Modal, InputNumber, Tag } from 'antd';
 import { UserOutlined, SettingOutlined, SoundOutlined, EyeOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import styled from 'styled-components';
 import { useUser } from '../contexts/UserContext';
 import { useNavigate } from 'react-router-dom';
+import { useHealthData } from '../contexts/HealthDataContext';
+import { toChineseLabel } from '../utils/conditions';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -62,6 +64,7 @@ const ProfileContainer = styled.div`
 
 const ProfilePage = () => {
   const { user, updateUser, updateSettings, elderlyMode, voiceEnabled, logout } = useUser();
+  const { buildUserProfile } = useHealthData();
   const navigate = useNavigate();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -138,6 +141,21 @@ const ProfilePage = () => {
                 管理您的个人信息和应用设置
               </Text>
             </div>
+          </Space>
+        </Card>
+
+        <Card className="profile-card" title="慢病标签">
+          <Space wrap>
+            {(() => {
+              const profile = buildUserProfile();
+              const cond = Array.isArray(profile.conditions) ? profile.conditions : [];
+              if (cond.length === 0) {
+                return <Text type="secondary">未标注慢病</Text>;
+              }
+              return cond.map((c) => (
+                <Tag color="geekblue" key={c}>{toChineseLabel(c)}</Tag>
+              ));
+            })()}
           </Space>
         </Card>
 

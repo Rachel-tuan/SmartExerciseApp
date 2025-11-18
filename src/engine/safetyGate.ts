@@ -128,11 +128,12 @@ function checkPARQ(profile: UserProfile): { score: number; hasRisk: boolean } {
   const mh = typeof mhText === 'string' ? mhText : '';
   const flags = [
     ...conditions,
-    ...(mh.includes('心') ? ['heart'] : []),
+    ...(mh.includes('心脏病') ? ['heart_disease'] : []),
+    ...(mh.includes('冠心病') ? ['coronary_heart_disease'] : []),
     ...(mh.includes('高血压') ? ['hypertension'] : []),
     ...(mh.includes('糖尿病') ? ['diabetes'] : [])
   ];
-  if (flags.includes('heart')) { score += 3; hasRisk = true; }
+  if (flags.includes('heart_disease') || flags.includes('coronary_heart_disease')) { score += 3; hasRisk = true; }
   if (flags.includes('hypertension')) { score += 2; }
   if (flags.includes('diabetes')) { score += 2; }
 
@@ -157,14 +158,14 @@ function checkVitalThresholds(measurements: Measurement[]): {
   if (latest.bp) {
     const { systolic, diastolic } = latest.bp;
     
-    if (systolic > VITAL_THRESHOLDS.systolicBP.max || systolic < VITAL_THRESHOLDS.systolicBP.min) {
+    if (systolic >= VITAL_THRESHOLDS.systolicBP.max || systolic <= VITAL_THRESHOLDS.systolicBP.min) {
       violations.push(`收缩压异常: ${systolic}mmHg`);
-      severity = systolic > 200 || systolic < 80 ? 'red' : 'yellow';
+      if (systolic >= 180 || systolic <= 80) severity = 'red'; else severity = 'yellow';
     }
     
-    if (diastolic > VITAL_THRESHOLDS.diastolicBP.max || diastolic < VITAL_THRESHOLDS.diastolicBP.min) {
+    if (diastolic >= VITAL_THRESHOLDS.diastolicBP.max || diastolic <= VITAL_THRESHOLDS.diastolicBP.min) {
       violations.push(`舒张压异常: ${diastolic}mmHg`);
-      if (diastolic > 120 || diastolic < 50) severity = 'red';
+      if (diastolic >= 110 || diastolic <= 50) severity = 'red';
       else if (severity === 'green') severity = 'yellow';
     }
   }
@@ -175,7 +176,7 @@ function checkVitalThresholds(measurements: Measurement[]): {
     const isFasting = latest.bg.isFasting === true; // 若未标注则按随机血糖处理
     const threshold = isFasting ? VITAL_THRESHOLDS.fastingGlucose : VITAL_THRESHOLDS.randomGlucose;
     
-    if (glucose > threshold.max || glucose < threshold.min) {
+    if (glucose >= threshold.max || glucose <= threshold.min) {
       violations.push(`血糖异常: ${glucose}mmol/L`);
       if (glucose > 20 || glucose < 3) severity = 'red';
       else if (severity === 'green') severity = 'yellow';
@@ -186,7 +187,7 @@ function checkVitalThresholds(measurements: Measurement[]): {
   if (latest.hr != null) {
     const hr = latest.hr;
     
-    if (hr > VITAL_THRESHOLDS.heartRate.max || hr < VITAL_THRESHOLDS.heartRate.min) {
+    if (hr >= VITAL_THRESHOLDS.heartRate.max || hr <= VITAL_THRESHOLDS.heartRate.min) {
       violations.push(`心率异常: ${hr}bpm`);
       if (hr > 120 || hr < 40) severity = 'red';
       else if (severity === 'green') severity = 'yellow';
